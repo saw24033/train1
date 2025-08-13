@@ -197,10 +197,11 @@ RunService.Heartbeat.Connect(() => {
 		//   t ≈ 0   -> represent as the *end of previous segment* (seg-1, t=1)
 		//   t ≈ 1   -> represent as the *end of current segment* (seg,   t=1)
 		// EXCEPTION: Don't move backwards if we're at a terminus position
+		const atForwardTerminus = state.direction === "reverse" && state.lastSeg >= maxSegments && bestT <= EPS;
 		const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
 		const isAtEndTerminus = bestSeg === maxSegments && bestT >= 1 - EPS;
 
-		if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus) {
+		if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus && !atForwardTerminus) {
 			bestSeg = bestSeg - 1;
 			bestT = 1.0;
 		} else if (bestT >= 1 - EPS) {
@@ -211,6 +212,12 @@ RunService.Heartbeat.Connect(() => {
 		if (isAtOriginTerminus) {
 			bestSeg = 1;
 			bestT = 0.0;
+		} else if (atForwardTerminus) {
+			bestSeg = maxSegments;
+			bestT = 0.0;
+			if (shapeKey === "R026" && math.floor(tick()) % 2 === 0) {
+				print(`DEBUG: ${name} held at forward terminus after reversal`);
+			}
 		} else if (isAtEndTerminus) {
 			bestSeg = maxSegments;
 			bestT = 1.0;
