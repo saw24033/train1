@@ -252,6 +252,24 @@ function updateTrainOnRoute(trainName: string, state: RouteTrainState, deltaTime
 		const deltaT = deltaTime / segmentTime;
 		state.t += deltaT;
 
+		// Use a clamped t value for interpolation so we don't overshoot
+		const interpT = math.min(state.t, 1);
+
+		// Interpolate position with final validation
+		const newPos = currentWp.Lerp(nextWp, interpT);
+
+		// Validate position before setting
+		if (newPos && newPos.X !== undefined && newPos.Y !== undefined && newPos.Z !== undefined) {
+			part.Position = newPos;
+		} else {
+			warn(`CRITICAL: Train ${trainName} generated invalid position: ${newPos}`);
+			return;
+		}
+
+		// Face movement direction
+		const direction = nextWp.sub(currentWp).Unit;
+		part.CFrame = new CFrame(newPos, newPos.add(direction));
+
 		if (state.t >= 1) {
 			state.t = 0;
 
@@ -273,21 +291,6 @@ function updateTrainOnRoute(trainName: string, state: RouteTrainState, deltaTime
 				print(`Train ${trainName} entered service on route ${state.routeId}`);
 			}
 		}
-
-		// Interpolate position with final validation
-		const newPos = currentWp.Lerp(nextWp, state.t);
-
-		// Validate position before setting
-		if (newPos && newPos.X !== undefined && newPos.Y !== undefined && newPos.Z !== undefined) {
-			part.Position = newPos;
-		} else {
-			warn(`CRITICAL: Train ${trainName} generated invalid position: ${newPos}`);
-			return;
-		}
-
-		// Face movement direction
-		const direction = nextWp.sub(currentWp).Unit;
-		part.CFrame = new CFrame(newPos, newPos.add(direction));
 	} else {
 		// Train can't move - handle terminus behavior
 		if (state.direction === "forward" && state.waypointIndex >= maxIndex) {
