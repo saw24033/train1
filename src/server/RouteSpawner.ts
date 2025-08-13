@@ -424,9 +424,10 @@ function broadcastAITrainPosition(
 
 	// Handle terminus positions properly
 	const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
-	const isAtEndTerminus = bestSeg >= maxSegments && bestT >= 1 - EPS;
+	const isAtEndTerminus =
+		bestSeg >= maxSegments && (bestT >= 1 - EPS || (state.direction === "reverse" && bestT <= EPS));
 
-	if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus) {
+	if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus && !isAtEndTerminus) {
 		bestSeg = bestSeg - 1;
 		bestT = 1.0;
 	} else if (bestT >= 1 - EPS) {
@@ -439,7 +440,7 @@ function broadcastAITrainPosition(
 		bestT = 0.0;
 	} else if (isAtEndTerminus) {
 		bestSeg = maxSegments;
-		bestT = 1.0;
+		bestT = state.direction === "reverse" ? 0.0 : 1.0;
 	}
 
 	// Build station ETAs (simplified for AI trains)
