@@ -1,0 +1,432 @@
+// TrainSystem.server.ts - Simplified, reliable train movement system
+import { RunService, ReplicatedStorage, Workspace, Players } from "@rbxts/services";
+import { RouteDefinitions, RouteManager, RouteDefinition } from "shared/RouteDefinitions";
+
+// Simple train states
+enum TrainState {
+	DEPOT = "depot",
+	MOVING = "moving",
+	DWELLING = "dwelling",
+	REVERSING = "reversing",
+}
+
+interface TrainData {
+	trainName: string;
+	routeId: string;
+	state: TrainState;
+
+	// Movement data
+	currentWaypointIndex: number;
+	targetWaypointIndex: number;
+	direction: "forward" | "reverse"; // forward = 0->max, reverse = max->0
+	progress: number; // 0-1 between current and target waypoint
+
+	// Station data
+	nextStationIndex: number; // Index in route.stations array
+	dwellStartTime?: number;
+
+	// Phase tracking
+	phase: "depot" | "service";
+}
+
+const activeTrains = new Map<string, TrainData>();
+const routeSchedules = new Map<string, number>();
+
+// Create RouteSelection RemoteEvent
+let RouteSelectionEvent = ReplicatedStorage.FindFirstChild("RouteSelection") as RemoteEvent;
+if (!RouteSelectionEvent) {
+	RouteSelectionEvent = new Instance("RemoteEvent");
+	RouteSelectionEvent.Name = "RouteSelection";
+	RouteSelectionEvent.Parent = ReplicatedStorage;
+}
+
+// Handle player route selection
+RouteSelectionEvent.OnServerEvent.Connect((player: Player, ...args: unknown[]) => {
+	const routeId = args[0] as string;
+	const route = RouteManager.getRoute(routeId);
+	if (!route) {
+		warn(`Invalid route selected: ${routeId}`);
+		return;
+	}
+
+	const currentHour = math.floor(tick() / 3600) % 24;
+	if (!RouteManager.isOperational(routeId, currentHour)) {
+		return;
+	}
+
+	spawnTrain(routeId, player.Name);
+});
+
+function spawnTrain(routeId: string, playerName?: string): void {
+	const route = RouteManager.getRoute(routeId);
+	if (!route) return;
+
+	const trainName = playerName !== undefined ? `${playerName}_${routeId}` : `AI_${routeId}_${tick()}`;
+
+	// Create train model
+	const trainsFolder = (Workspace.FindFirstChild("Trains") as Folder) || new Instance("Folder");
+	trainsFolder.Name = "Trains";
+	trainsFolder.Parent = Workspace;
+
+	const trainModel = new Instance("Model");
+	trainModel.Name = trainName;
+	trainModel.Parent = trainsFolder;
+
+	const trainPart = new Instance("Part");
+	trainPart.Name = "Primary";
+	trainPart.Size = new Vector3(4, 2, 16);
+	trainPart.Position = route.depotSpawn;
+	trainPart.Material = Enum.Material.Metal;
+	trainPart.BrickColor = getOperatorColor(route.operator);
+	trainPart.Anchored = true;
+	trainPart.Parent = trainModel;
+	trainModel.PrimaryPart = trainPart;
+
+	// Add route GUI
+	const routeGui = new Instance("BillboardGui");
+	routeGui.Size = UDim2.fromOffset(200, 50);
+	routeGui.Parent = trainPart;
+
+	const routeLabel = new Instance("TextLabel");
+	routeLabel.Size = UDim2.fromScale(1, 1);
+	routeLabel.BackgroundTransparency = 1;
+	routeLabel.Text = `${route.routeNumber}: ${route.displayName}`;
+	routeLabel.TextColor3 = new Color3(1, 1, 1);
+	routeLabel.TextScaled = true;
+	routeLabel.Font = Enum.Font.GothamBold;
+	routeLabel.Parent = routeGui;
+
+	// Initialize train data - start in depot
+	const trainData: TrainData = {
+		trainName,
+		routeId,
+		state: TrainState.DEPOT,
+		currentWaypointIndex: 0,
+		targetWaypointIndex: 1,
+		direction: "forward",
+		progress: 0,
+		nextStationIndex: 0, // Will look for first station after entering service
+		phase: "depot",
+	};
+
+	activeTrains.set(trainName, trainData);
+	print(`Spawned train ${trainName} for route ${routeId}`);
+}
+
+function getOperatorColor(operator: string): BrickColor {
+	const colors = {
+		Connect: new BrickColor("Bright blue"),
+		Metro: new BrickColor("Bright red"),
+		Waterline: new BrickColor("Teal"),
+		AirLink: new BrickColor("Bright yellow"),
+		Express: new BrickColor("Dark green"),
+		Training: new BrickColor("Light grey"),
+	};
+	return colors[operator as keyof typeof colors] || new BrickColor("Medium stone grey");
+}
+
+// Auto spawn trains
+function autoSpawnTrains(): void {
+	const currentTime = tick();
+	const currentHour = math.floor(currentTime / 3600) % 24;
+	const isPeakHour = (currentHour >= 7 && currentHour <= 9) || (currentHour >= 17 && currentHour <= 19);
+
+	for (const [routeId] of pairs(RouteDefinitions)) {
+		const routeIdStr = tostring(routeId);
+		if (!RouteManager.isOperational(routeIdStr, currentHour)) continue;
+
+		const lastSpawn = routeSchedules.get(routeIdStr) ?? 0;
+		const frequency = RouteManager.getFrequency(routeIdStr, isPeakHour);
+		const spawnInterval = frequency * 60;
+
+		if (currentTime - lastSpawn >= spawnInterval) {
+			spawnTrain(routeIdStr);
+			routeSchedules.set(routeIdStr, currentTime);
+		}
+	}
+}
+
+// Main update loop
+RunService.Heartbeat.Connect((deltaTime: number) => {
+	autoSpawnTrains();
+
+	for (const [trainName, trainData] of pairs(activeTrains)) {
+		updateTrain(trainName, trainData, deltaTime);
+	}
+});
+
+function updateTrain(trainName: string, trainData: TrainData, deltaTime: number): void {
+	const trainsFolder = Workspace.FindFirstChild("Trains");
+	if (!trainsFolder) {
+		print(`ERROR: Trains folder missing from workspace!`);
+		return;
+	}
+	
+	const train = trainsFolder.FindFirstChild(trainName) as Model;
+	if (!train) {
+		print(`ERROR: Train ${trainName} model completely missing from Trains folder - State: ${trainData.state}, Phase: ${trainData.phase}`);
+		activeTrains.delete(trainName);
+		return;
+	}
+	
+	if (!train.PrimaryPart) {
+		print(`ERROR: Train ${trainName} missing PrimaryPart - Model exists but corrupted`);
+		activeTrains.delete(trainName);
+		return;
+	}
+
+	const route = RouteManager.getRoute(trainData.routeId);
+	if (!route) return;
+
+	// Handle different train states
+	switch (trainData.state) {
+		case TrainState.DEPOT:
+			handleDepotMovement(trainData, route, deltaTime);
+			break;
+		case TrainState.MOVING:
+			handleMovement(trainData, route, deltaTime);
+			break;
+		case TrainState.DWELLING:
+			handleDwelling(trainData, route);
+			break;
+		case TrainState.REVERSING:
+			handleReversing(trainData, route);
+			break;
+		default:
+			print(`ERROR: Train ${trainData.trainName} in unknown state: ${trainData.state}`);
+			break;
+	}
+	
+	// Verify train still exists after state handling
+	const trainAfterUpdate = trainsFolder.FindFirstChild(trainName) as Model;
+	if (!trainAfterUpdate) {
+		print(`CRITICAL: Train ${trainName} was DESTROYED during ${trainData.state} state handling!`);
+		activeTrains.delete(trainName);
+		return;
+	}
+
+	// Update train position
+	updateTrainPosition(train, trainData, route);
+}
+
+function handleDepotMovement(trainData: TrainData, route: RouteDefinition, deltaTime: number): void {
+	// Move through depot path
+	const depotPath = route.depotPath;
+	const segmentTime = 2; // 2 seconds per depot segment
+
+	trainData.progress += deltaTime / segmentTime;
+
+	if (trainData.progress >= 1) {
+		trainData.progress = 0;
+		trainData.currentWaypointIndex++;
+
+		// Check if reached end of depot path
+		if (trainData.currentWaypointIndex >= depotPath.size() - 1) {
+			// Enter service on main route
+			trainData.phase = "service";
+			trainData.state = TrainState.MOVING;
+			trainData.currentWaypointIndex = route.mergePoint;
+			trainData.targetWaypointIndex = route.mergePoint + 1;
+			trainData.nextStationIndex = findNextStation(trainData.currentWaypointIndex, route, "forward");
+			print(`Train ${trainData.trainName} entered service`);
+		} else {
+			trainData.targetWaypointIndex = trainData.currentWaypointIndex + 1;
+		}
+	}
+}
+
+function handleMovement(trainData: TrainData, route: RouteDefinition, deltaTime: number): void {
+	// Calculate movement speed based on route timing
+	const segmentTime = getSegmentTime(trainData.currentWaypointIndex, route, trainData.direction);
+	trainData.progress += deltaTime / segmentTime;
+
+	if (trainData.progress >= 1) {
+		trainData.progress = 0;
+		
+		const oldWaypointIndex = trainData.currentWaypointIndex;
+
+		// Move to next waypoint
+		if (trainData.direction === "forward") {
+			trainData.currentWaypointIndex++;
+		} else {
+			trainData.currentWaypointIndex--;
+		}
+		
+		print(`DEBUG: Train ${trainData.trainName} moved waypoint ${oldWaypointIndex} -> ${trainData.currentWaypointIndex} (${trainData.direction})`);
+
+		// Check if reached a station
+		const stationIndex = findStationAtWaypoint(trainData.currentWaypointIndex, route);
+		if (stationIndex !== -1 && stationIndex === trainData.nextStationIndex) {
+			// Arrived at expected station
+			trainData.state = TrainState.DWELLING;
+			trainData.dwellStartTime = tick();
+			print(`Train ${trainData.trainName} arrived at ${route.stations[stationIndex].name}`);
+			return;
+		}
+
+		// Update target waypoint
+		const waypoints = route.worldWaypoints;
+		if (trainData.direction === "forward") {
+			if (trainData.currentWaypointIndex >= waypoints.size() - 1) {
+				// Reached terminus - start reversing
+				print(`DEBUG: Train ${trainData.trainName} reached terminus (waypoint ${trainData.currentWaypointIndex}), starting reversal`);
+				trainData.state = TrainState.REVERSING;
+				return;
+			}
+			trainData.targetWaypointIndex = trainData.currentWaypointIndex + 1;
+		} else {
+			if (trainData.currentWaypointIndex <= 0) {
+				// Reached origin - start reversing
+				print(`DEBUG: Train ${trainData.trainName} reached origin (waypoint ${trainData.currentWaypointIndex}), starting reversal`);
+				trainData.state = TrainState.REVERSING;
+				return;
+			}
+			trainData.targetWaypointIndex = trainData.currentWaypointIndex - 1;
+		}
+	}
+}
+
+function handleDwelling(trainData: TrainData, route: RouteDefinition): void {
+	if (trainData.dwellStartTime === undefined) return;
+
+	const currentStation = route.stations[trainData.nextStationIndex];
+	if (!currentStation) return;
+
+	const dwellTime = tick() - trainData.dwellStartTime;
+	if (dwellTime >= currentStation.dwellTime) {
+		// Finished dwelling
+		trainData.dwellStartTime = undefined;
+		trainData.state = TrainState.MOVING;
+
+		// Find next station
+		trainData.nextStationIndex = findNextStation(trainData.currentWaypointIndex, route, trainData.direction);
+
+		// Update target waypoint
+		const waypoints = route.worldWaypoints;
+		if (trainData.direction === "forward") {
+			trainData.targetWaypointIndex = math.min(trainData.currentWaypointIndex + 1, waypoints.size() - 1);
+		} else {
+			trainData.targetWaypointIndex = math.max(trainData.currentWaypointIndex - 1, 0);
+		}
+
+		const nextStationName = route.stations[trainData.nextStationIndex]?.name || "End of line";
+		print(`Train ${trainData.trainName} departed ${currentStation.name} - going ${trainData.direction} to ${nextStationName}`);
+	}
+}
+
+function handleReversing(trainData: TrainData, route: RouteDefinition): void {
+	const wasReverse = trainData.direction === "reverse";
+	
+	// Reverse direction
+	trainData.direction = trainData.direction === "forward" ? "reverse" : "forward";
+	trainData.progress = 0;
+
+	// Special handling for round trip completion
+	if (wasReverse && trainData.currentWaypointIndex === 0) {
+		// Train completed a full round trip - start new forward journey
+		print(`Train ${trainData.trainName} completed round trip, starting new forward journey`);
+		trainData.direction = "forward";
+		trainData.currentWaypointIndex = 0;
+		trainData.targetWaypointIndex = 1;
+		trainData.progress = 0;
+		trainData.nextStationIndex = findNextStation(0, route, "forward");
+		trainData.state = TrainState.MOVING;
+		return;
+	}
+
+	// Find next station in new direction
+	trainData.nextStationIndex = findNextStation(trainData.currentWaypointIndex, route, trainData.direction);
+
+	// Set target waypoint
+	const waypoints = route.worldWaypoints;
+	if (trainData.direction === "forward") {
+		trainData.targetWaypointIndex = math.min(trainData.currentWaypointIndex + 1, waypoints.size() - 1);
+	} else {
+		trainData.targetWaypointIndex = math.max(trainData.currentWaypointIndex - 1, 0);
+	}
+
+	trainData.state = TrainState.MOVING;
+	const nextStationName = route.stations[trainData.nextStationIndex]?.name || "Unknown";
+	print(`Train ${trainData.trainName} reversed direction - now going ${trainData.direction}, next station: ${nextStationName} (index: ${trainData.nextStationIndex})`);
+}
+
+function findNextStation(currentWaypoint: number, route: RouteDefinition, direction: "forward" | "reverse"): number {
+	if (direction === "forward") {
+		// Find next station ahead
+		for (let i = 0; i < route.stations.size(); i++) {
+			if (route.stations[i].waypointIndex > currentWaypoint) {
+				return i;
+			}
+		}
+		// If no station ahead, we've reached the end - look for terminus
+		return route.stations.size() - 1;
+	} else {
+		// Find next station behind (in reverse)
+		for (let i = route.stations.size() - 1; i >= 0; i--) {
+			if (route.stations[i].waypointIndex < currentWaypoint) {
+				return i;
+			}
+		}
+		// If no station behind, we're at the beginning - look for origin
+		return 0;
+	}
+}
+
+function findStationAtWaypoint(waypointIndex: number, route: RouteDefinition): number {
+	for (let i = 0; i < route.stations.size(); i++) {
+		if (route.stations[i].waypointIndex === waypointIndex) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+function getSegmentTime(waypointIndex: number, route: RouteDefinition, direction: "forward" | "reverse"): number {
+	const segmentTimes = route.segmentTimes;
+	if (segmentTimes && segmentTimes[direction] && segmentTimes[direction][waypointIndex] !== undefined) {
+		return segmentTimes[direction][waypointIndex];
+	}
+
+	// Fallback: use journey time divided by segments
+	const totalTime = direction === "forward" ? route.journeyTime.forward : route.journeyTime.reverse;
+	const numSegments = route.worldWaypoints.size() - 1;
+	return (totalTime * 60) / numSegments;
+}
+
+function updateTrainPosition(train: Model, trainData: TrainData, route: RouteDefinition): void {
+	if (!train.PrimaryPart) return;
+
+	// Get waypoint positions
+	let waypoints: Vector3[];
+	if (trainData.phase === "depot") {
+		waypoints = route.depotPath;
+	} else {
+		waypoints = route.worldWaypoints;
+	}
+
+	const currentWp = waypoints[trainData.currentWaypointIndex];
+	const targetWp = waypoints[trainData.targetWaypointIndex];
+
+	if (!currentWp || !targetWp) {
+		print(`ERROR: Train ${trainData.trainName} has invalid waypoints - current: ${trainData.currentWaypointIndex}, target: ${trainData.targetWaypointIndex}, total waypoints: ${waypoints.size()}`);
+		return;
+	}
+
+	// Interpolate position
+	const newPos = currentWp.Lerp(targetWp, trainData.progress);
+	train.PrimaryPart.Position = newPos;
+
+	// Face movement direction
+	const direction = targetWp.sub(currentWp).Unit;
+	train.PrimaryPart.CFrame = new CFrame(newPos, newPos.add(direction));
+}
+
+export function despawnTrain(trainName: string): void {
+	const train = Workspace.FindFirstChild("Trains")?.FindFirstChild(trainName);
+	if (train) {
+		train.Destroy();
+	}
+	activeTrains.delete(trainName);
+}
+
+print("New Train System initialized - Simplified and reliable");

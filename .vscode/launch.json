@@ -1,0 +1,12 @@
+{
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"name": "Reset TypeScript Cache",
+			"type": "node",
+			"request": "launch",
+			"program": "${workspaceFolder}/node_modules/typescript/lib/tsc.js",
+			"args": ["--build", "--clean"]
+		}
+	]
+}
