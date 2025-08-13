@@ -404,7 +404,7 @@ function broadcastAITrainPosition(
 ): void {
 	// Convert RouteTrainState to format expected by MapEvent
 	const waypoints = route.worldWaypoints;
-	const maxIndex = waypoints.size() - 1;
+	const maxSegments = waypoints.size() - 1;
 
 	// Calculate segment and t similar to MapBroadcaster logic
 	// For R026: waypoints 0,1,2,3 -> segments 1,2,3 (maxSegments = 3)
@@ -419,24 +419,36 @@ function broadcastAITrainPosition(
 		bestSeg = state.waypointIndex; // waypoint 3->2 is segment 3
 	}
 
-	const maxSegments = waypoints.size() - 1; // For R026: 4 waypoints -> 3 segments
 	const EPS = 1e-4;
 
-	// Recognize terminus positions before canonicalization
-	const atForwardTerminus = state.direction === "reverse" && state.waypointIndex === maxIndex && bestT <= EPS;
+	// Preserve original values for debugging
+	const originalSeg = bestSeg;
+	const originalPos = trainPart.Position;
 
-	const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
+	// Recognize terminus positions before canonicalization
+	const atForwardTerminus = state.direction === "reverse" && bestSeg >= maxSegments && bestT <= EPS;
+
+	const isAtOriginTerminus = bestSeg <= 1 && bestT <= EPS;
 	const isAtEndTerminus = atForwardTerminus || (bestSeg >= maxSegments && bestT >= 1 - EPS);
 
 	if (isAtOriginTerminus) {
 		bestSeg = 1;
 		bestT = 0.0;
 	} else if (isAtEndTerminus) {
+		if (atForwardTerminus) {
+			print(`DEBUG AI: ${trainName} reversing at terminus - seg:${originalSeg} pos:${originalPos}`);
+		}
 		bestSeg = maxSegments;
 		bestT = atForwardTerminus ? 0.0 : 1.0;
 	} else if (bestT <= EPS && bestSeg > 1) {
-		bestSeg = bestSeg - 1;
-		bestT = 1.0;
+		// When moving forward, stay on the newly entered segment rather than
+		// rolling back to the previous one to avoid flicker at waypoints.
+		if (state.direction === "forward") {
+			bestT = 0.0;
+		} else {
+			bestSeg = bestSeg - 1;
+			bestT = 1.0;
+		}
 	} else if (bestT >= 1 - EPS) {
 		bestT = 1.0;
 	}
