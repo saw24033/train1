@@ -422,11 +422,18 @@ function broadcastAITrainPosition(
 	const maxSegments = waypoints.size() - 1; // For R026: 4 waypoints -> 3 segments
 	const EPS = 1e-4;
 
-	// Handle terminus positions properly
-	const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
-	const isAtEndTerminus = bestSeg >= maxSegments && bestT >= 1 - EPS;
+	// Detect whether we're precisely at either terminus. When reversing at the
+	// forward terminus the train's t resets to 0, so we explicitly treat that
+	// as still being at the end terminus before any canonicalization occurs.
+	const isAtOriginTerminus =
+		bestSeg === 1 &&
+		((state.direction === "forward" && bestT <= EPS) || (state.direction === "reverse" && bestT >= 1 - EPS));
 
-	if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus) {
+	const isAtEndTerminus =
+		bestSeg >= maxSegments &&
+		((state.direction === "forward" && bestT >= 1 - EPS) || (state.direction === "reverse" && bestT <= EPS));
+
+	if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus && !isAtEndTerminus) {
 		bestSeg = bestSeg - 1;
 		bestT = 1.0;
 	} else if (bestT >= 1 - EPS) {
