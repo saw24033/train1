@@ -193,21 +193,36 @@ RunService.Heartbeat.Connect(() => {
 		const maxSegments = math.max(wps.size() - 1, 1);
 		const EPS = 1e-4; // small tolerance
 
-		// Recognize terminus positions before canonicalization
-		const atForwardTerminus = state.direction === "reverse" && bestSeg === maxSegments && bestT <= EPS;
+		// Preserve original values for debugging
+		const originalSeg = bestSeg;
+		const originalPos = bestPos;
 
-		const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
-		const isAtEndTerminus = atForwardTerminus || (bestSeg === maxSegments && bestT >= 1 - EPS);
+		// Recognize terminus positions before canonicalization
+		const atForwardTerminus = state.direction === "reverse" && bestSeg >= maxSegments && bestT <= EPS;
+
+		const isAtOriginTerminus = bestSeg <= 1 && bestT <= EPS;
+		const isAtEndTerminus = atForwardTerminus || (bestSeg >= maxSegments && bestT >= 1 - EPS);
 
 		if (isAtOriginTerminus) {
 			bestSeg = 1;
 			bestT = 0.0;
 		} else if (isAtEndTerminus) {
+			if (atForwardTerminus) {
+				print(`DEBUG: ${name} reversing at terminus - seg:${originalSeg} pos:${originalPos}`);
+			}
 			bestSeg = maxSegments;
 			bestT = atForwardTerminus ? 0.0 : 1.0;
 		} else if (bestT <= EPS && bestSeg > 1) {
-			bestSeg = bestSeg - 1;
-			bestT = 1.0;
+			// Avoid segment flicker near waypoints by keeping the new segment
+			// when moving in the current travel direction.
+			const advancingForward = state.direction === "forward" && bestSeg > state.lastSeg;
+			const advancingReverse = state.direction === "reverse" && bestSeg < state.lastSeg;
+			if (advancingForward || advancingReverse) {
+				bestT = 0.0;
+			} else {
+				bestSeg = bestSeg - 1;
+				bestT = 1.0;
+			}
 		} else if (bestT >= 1 - EPS) {
 			bestT = 1.0;
 		}
