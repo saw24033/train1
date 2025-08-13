@@ -422,11 +422,12 @@ function broadcastAITrainPosition(
 	const maxSegments = waypoints.size() - 1; // For R026: 4 waypoints -> 3 segments
 	const EPS = 1e-4;
 
-	// Handle terminus positions properly
+	// Detect terminus conditions before any segment rollback
+	const atForwardTerminus = state.direction === "reverse" && state.waypointIndex === maxIndex && bestT <= EPS;
 	const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
 	const isAtEndTerminus = bestSeg >= maxSegments && bestT >= 1 - EPS;
 
-	if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus) {
+	if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus && !atForwardTerminus) {
 		bestSeg = bestSeg - 1;
 		bestT = 1.0;
 	} else if (bestT >= 1 - EPS) {
@@ -437,6 +438,10 @@ function broadcastAITrainPosition(
 	if (isAtOriginTerminus) {
 		bestSeg = 1;
 		bestT = 0.0;
+	} else if (atForwardTerminus) {
+		bestSeg = maxSegments;
+		bestT = 0.0;
+		print(`DEBUG: Train ${trainName} held at forward terminus after reversal`);
 	} else if (isAtEndTerminus) {
 		bestSeg = maxSegments;
 		bestT = 1.0;
