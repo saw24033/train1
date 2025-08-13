@@ -193,26 +193,22 @@ RunService.Heartbeat.Connect(() => {
 		const maxSegments = math.max(wps.size() - 1, 1);
 		const EPS = 1e-4; // small tolerance
 
-		// Rule:
-		//   t ≈ 0   -> represent as the *end of previous segment* (seg-1, t=1)
-		//   t ≈ 1   -> represent as the *end of current segment* (seg,   t=1)
-		// EXCEPTION: Don't move backwards if we're at a terminus position
+		// Recognize terminus positions before canonicalization
+		const atForwardTerminus = state.direction === "reverse" && bestSeg === maxSegments && bestT <= EPS;
+
 		const isAtOriginTerminus = bestSeg === 1 && bestT <= EPS;
-		const isAtEndTerminus = bestSeg === maxSegments && bestT >= 1 - EPS;
+		const isAtEndTerminus = atForwardTerminus || (bestSeg === maxSegments && bestT >= 1 - EPS);
 
-		if (bestT <= EPS && bestSeg > 1 && !isAtOriginTerminus) {
-			bestSeg = bestSeg - 1;
-			bestT = 1.0;
-		} else if (bestT >= 1 - EPS) {
-			bestT = 1.0;
-		}
-
-		// Special handling for terminus positions to prevent backwards teleportation
 		if (isAtOriginTerminus) {
 			bestSeg = 1;
 			bestT = 0.0;
 		} else if (isAtEndTerminus) {
 			bestSeg = maxSegments;
+			bestT = atForwardTerminus ? 0.0 : 1.0;
+		} else if (bestT <= EPS && bestSeg > 1) {
+			bestSeg = bestSeg - 1;
+			bestT = 1.0;
+		} else if (bestT >= 1 - EPS) {
 			bestT = 1.0;
 		}
 
